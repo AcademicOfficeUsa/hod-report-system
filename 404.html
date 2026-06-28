@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HOD Report System</title>
+  <script>
+    // GitHub Pages SPA routing fix
+    // Saves the current path into sessionStorage then redirects to index
+    var path = window.location.pathname;
+    var repoBase = '/hod-report-system';
+    var appPath = path.startsWith(repoBase) ? path.slice(repoBase.length) || '/' : '/';
+    sessionStorage.setItem('spa-redirect', appPath + window.location.search + window.location.hash);
+    window.location.replace(repoBase + '/');
+  </script>
+</head>
+<body>
+  <p>Loading...</p>
+</body>
+</html>
