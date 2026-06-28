@@ -26,10 +26,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
-
       if (session?.user) {
         await fetchProfile(session.user.id);
       } else {
@@ -38,11 +37,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        await fetchProfile(session.user.id);
       }
       setLoading(false);
     });
@@ -50,7 +49,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchProfile = async (userId: string) => {
+  // Retries briefly in case the DB trigger that creates the profile
+  // hasn't committed yet by the time this is called.
+  const fetchProfile = async (userId: string, attempt = 0): Promise<void> => {
     const { data, error } = await supabase
       .from('user_profiles')
       .select('*')
@@ -59,22 +60,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (error) {
       console.error('Error fetching profile:', error);
-    } else {
-      setProfile(data);
+      setError(error.message);
+      return;
     }
+
+    if (!data && attempt < 5) {
+      // Profile not created yet — wait briefly and retry.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return fetchProfile(userId, attempt + 1);
+    }
+
+    setProfile(data);
   };
 
   const signIn = async (email: string, password: string) => {
     setError(null);
     setLoading(true);
-
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-
     if (error) {
       setError(error.message);
       setLoading(false);
       throw error;
     }
+    // onAuthStateChange handles setUser/setProfile/setLoading(false) from here.
   };
 
   const signUp = async (
@@ -93,9 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options: {
         data: {
           full_name: fullName,
-          role
-        }
-      }
+          role,
+          department_id: departmentId ?? null,
+        },
+      },
     });
 
     if (error) {
@@ -104,25 +113,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw error;
     }
 
-    if (data.user) {
-      // Create profile
-      const { error: profileError } = await supabase
-        .from('user_profiles')
-        .insert({
-          id: data.user.id,
-          email,
-          full_name: fullName,
-          role,
-          department_id: departmentId || null
-        });
-
-      if (profileError) {
-        setError(profileError.message);
-        setLoading(false);
-        throw profileError;
-      }
+    if (!data.user) {
+      setLoading(false);
+      throw new Error('Sign up did not return a user.');
     }
 
+    // The user_profiles row is created server-side by a DB trigger
+    // (see handle_new_user() in your Supabase SQL editor) — no manual
+    // insert here, so there's no race against onAuthStateChange's
+    // fetchProfile call. If data.session is present (email confirmation
+    // disabled), onAuthStateChange will fire and fetchProfile will
+    // retry until the trigger's insert is visible.
     setLoading(false);
   };
 
@@ -136,7 +137,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAdmin = profile?.role === 'assistant_deputy'
     || profile?.role === 'deputy'
     || profile?.role === 'headmaster';
-
   const isHod = profile?.role === 'hod';
 
   return (
