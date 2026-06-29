@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { supabase } from '../lib/supabase';
-import type { User, Session } from '@supabase/supabase-js';
+import { Bolt Database, configError } from '../lib/supabase';
+import type { User, Session } from '@supabase/Bolt Database-js';
 import type { UserProfile, UserRole } from '../lib/types';
 
 interface AuthContextType {
@@ -23,12 +23,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(configError);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    if (!Bolt Database) {
+      setLoading(false);
+      return;
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
+
       if (session?.user) {
         await fetchProfile(session.user.id);
       } else {
@@ -37,11 +43,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        await fetchProfile(session.user.id);
+        fetchProfile(session.user.id);
       }
       setLoading(false);
     });
@@ -49,10 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Retries briefly in case the DB trigger that creates the profile
-  // hasn't committed yet by the time this is called.
-  const fetchProfile = async (userId: string, attempt = 0): Promise<void> => {
-    const { data, error } = await supabase
+  const fetchProfile = async (userId: string) => {
+    if (!Bolt Database) return;
+    const { data, error } = await Bolt Database
       .from('user_profiles')
       .select('*')
       .eq('id', userId)
@@ -60,29 +65,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (error) {
       console.error('Error fetching profile:', error);
-      setError(error.message);
-      return;
+    } else {
+      setProfile(data);
     }
-
-    if (!data && attempt < 5) {
-      // Profile not created yet — wait briefly and retry.
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      return fetchProfile(userId, attempt + 1);
-    }
-
-    setProfile(data);
   };
 
   const signIn = async (email: string, password: string) => {
+    if (!Bolt Database) throw new Error('Supabase not configured');
     setError(null);
     setLoading(true);
+
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+
     if (error) {
       setError(error.message);
       setLoading(false);
       throw error;
     }
-    // onAuthStateChange handles setUser/setProfile/setLoading(false) from here.
   };
 
   const signUp = async (
@@ -92,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     role: UserRole,
     departmentId?: string
   ) => {
+    if (!Bolt Database) throw new Error('Supabase not configured');
     setError(null);
     setLoading(true);
 
@@ -101,10 +101,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options: {
         data: {
           full_name: fullName,
-          role,
-          department_id: departmentId ?? null,
-        },
-      },
+          role
+        }
+      }
     });
 
     if (error) {
@@ -113,21 +112,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw error;
     }
 
-    if (!data.user) {
-      setLoading(false);
-      throw new Error('Sign up did not return a user.');
+    if (data.user) {
+      const { error: profileError } = await Bolt Database
+        .from('user_profiles')
+        .insert({
+          id: data.user.id,
+          email,
+          full_name: fullName,
+          role,
+          department_id: departmentId || null
+        });
+
+      if (profileError) {
+        setError(profileError.message);
+        setLoading(false);
+        throw profileError;
+      }
     }
 
-    // The user_profiles row is created server-side by a DB trigger
-    // (see handle_new_user() in your Supabase SQL editor) — no manual
-    // insert here, so there's no race against onAuthStateChange's
-    // fetchProfile call. If data.session is present (email confirmation
-    // disabled), onAuthStateChange will fire and fetchProfile will
-    // retry until the trigger's insert is visible.
     setLoading(false);
   };
 
   const signOut = async () => {
+    if (!Bolt Database) return;
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
@@ -137,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAdmin = profile?.role === 'assistant_deputy'
     || profile?.role === 'deputy'
     || profile?.role === 'headmaster';
+
   const isHod = profile?.role === 'hod';
 
   return (

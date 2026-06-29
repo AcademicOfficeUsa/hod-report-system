@@ -26,14 +26,24 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [staffNames, setStaffNames] = useState<string[]>([]);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
   // Form State
   const [selectedMonth, setSelectedMonth] = useState(MONTHS[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [dateSubmitted, setDateSubmitted] = useState(new Date().toISOString().split('T')[0]);
 
-  // Report sections
-  const [issues, setIssues] = useState<HodIssue[]>([]);
+  // Report sections - Initialize with ISSUE_AREAS immediately
+  const [issues, setIssues] = useState<HodIssue[]>(() =>
+    ISSUE_AREAS.map((area, i) => ({
+      id: `temp-issue-${i}`,
+      report_id: '',
+      department_id: '',
+      area_of_focus: area,
+      frequency: 0,
+      remarks: ''
+    }))
+  );
   const [curriculum, setCurriculum] = useState<HodCurriculum[]>([]);
   const [examResults, setExamResults] = useState<HodExamResult[]>([]);
   const [belowKpi, setBelowKpi] = useState<HodBelowKpi[]>([]);
@@ -69,11 +79,21 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const [openSections, setOpenSections] = useState<number[]>([1]);
 
   const departmentId = profile?.department_id;
-  const isScience = departments.find(d => d.id === departmentId)?.is_science || false;
+  const department = departments.find(d => d.id === departmentId);
+  const isScience = department?.is_science || false;
+
+  // HOD info comes from user profile
+  const hodName = profile?.full_name || '';
+  const hodEmail = profile?.email || '';
 
   // Load initial data
   useEffect(() => {
+    if (!supabase) return;
     loadDepartments();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !departmentId) return;
     loadTeachers();
     loadSubjects();
     if (reportId) {
@@ -82,18 +102,31 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   }, [departmentId]);
 
   useEffect(() => {
-    if (teachers.length > 0 && subjects.length > 0) {
+    if (teachers.length > 0 || subjects.length > 0) {
       initializeSections();
+      setDataLoaded(true);
     }
   }, [teachers, subjects, selectedMonth]);
 
+  // Also initialize when departmentId becomes available
+  useEffect(() => {
+    if (departmentId) {
+      // Update issues with correct department_id
+      setIssues(prev => prev.map(issue => ({
+        ...issue,
+        department_id: departmentId
+      })));
+    }
+  }, [departmentId]);
+
   const loadDepartments = async () => {
+    if (!supabase) return;
     const { data } = await supabase.from('departments').select('*');
     if (data) setDepartments(data);
   };
 
   const loadTeachers = async () => {
-    if (!departmentId) return;
+    if (!supabase || !departmentId) return;
     const { data } = await supabase
       .from('teachers')
       .select('*')
@@ -108,7 +141,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   };
 
   const loadSubjects = async () => {
-    if (!departmentId) return;
+    if (!supabase || !departmentId) return;
     const { data } = await supabase
       .from('subjects')
       .select('*')
@@ -491,12 +524,26 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     );
   };
 
-  const department = departments.find(d => d.id === departmentId);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-8 h-8 border-3 border-[#1F3864] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Show message if user doesn't have a department assigned
+  if (!departmentId) {
+    return (
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-8 text-center">
+        <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+        <h3 className="text-lg font-bold text-yellow-800 mb-2">Department Not Assigned</h3>
+        <p className="text-yellow-700 mb-4">
+          Your account is not linked to a department. Please contact the administrator to assign you to a department.
+        </p>
+        <p className="text-sm text-yellow-600">
+          Available departments: Physics, ABC, Math & Tech, Business, Humanities, Languages, Vocational
+        </p>
       </div>
     );
   }
@@ -513,8 +560,8 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
             <p className="text-white/70 text-sm">Head of Department → Assistant Deputy Headmaster</p>
           </div>
           <div className="text-right">
-            <div className="text-[#C9A84C] text-lg font-bold">{department?.name}</div>
-            <div className="text-white/60 text-xs">HOD: {department?.hod_name}</div>
+            <div className="text-[#C9A84C] text-lg font-bold">{department?.name || 'Select Department'}</div>
+            <div className="text-white/60 text-xs">HOD: {hodName || 'Not Set'}</div>
           </div>
         </div>
       </div>
@@ -554,7 +601,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           <InputGroup label="Department">
             <input
               type="text"
-              value={department?.name || ''}
+              value={department?.name || 'Not Assigned'}
               readOnly
               className="bg-green-50 border-green-200 text-green-700 font-medium"
             />
@@ -579,10 +626,10 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
             />
           </InputGroup>
           <InputGroup label="HOD Name">
-            <input type="text" value={department?.hod_name || ''} readOnly className="bg-green-50 border-green-200 text-green-700 font-medium" />
+            <input type="text" value={hodName || 'Not Set'} readOnly className="bg-green-50 border-green-200 text-green-700 font-medium" />
           </InputGroup>
           <InputGroup label="HOD Email">
-            <input type="email" value={department?.hod_email || ''} readOnly className="bg-green-50 border-green-200 text-green-700 font-medium" />
+            <input type="email" value={hodEmail || 'Not Set'} readOnly className="bg-green-50 border-green-200 text-green-700 font-medium" />
           </InputGroup>
           <InputGroup label="Date">
             <input
