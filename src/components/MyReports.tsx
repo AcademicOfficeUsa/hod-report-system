@@ -2,10 +2,13 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import type { HodReport, Department } from '../lib/types';
-import { MONTHS } from '../lib/types';
-import { FileText, Clock, CheckCircle, AlertCircle, Eye, Pencil, Send } from 'lucide-react';
+import { FileText, Clock, CheckCircle, AlertCircle, Eye, Pencil, Send, X } from 'lucide-react';
 
-export function MyReports() {
+interface MyReportsProps {
+  onEditReport?: (reportId: string) => void;
+}
+
+export function MyReports({ onEditReport }: MyReportsProps) {
   const { profile } = useAuth();
   const [reports, setReports] = useState<HodReport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,13 +25,17 @@ export function MyReports() {
   const loadReports = async () => {
     setLoading(true);
 
-    const { data } = await supabase
+    const { data, error } = await supabase!
       .from('hod_reports')
       .select('*')
       .eq('department_id', departmentId)
       .order('created_at', { ascending: false });
 
-    if (data) setReports(data);
+    if (error) {
+      console.error('Error loading reports:', error);
+    } else if (data) {
+      setReports(data);
+    }
     setLoading(false);
   };
 
@@ -64,7 +71,7 @@ export function MyReports() {
     const reason = prompt('Please provide a reason for requesting edit access:');
     if (!reason) return;
 
-    const { error } = await supabase
+    const { error } = await supabase!
       .from('edit_requests')
       .insert({
         report_id: reportId,
@@ -139,6 +146,7 @@ export function MyReports() {
 
                 <div className="flex gap-2">
                   <button
+                    onClick={() => setSelectedReport(report)}
                     title="View Report"
                     className="p-2 text-gray-500 hover:text-[#1F3864] hover:bg-gray-100 rounded-lg"
                   >
@@ -147,6 +155,7 @@ export function MyReports() {
 
                   {(report.status === 'draft' || report.status === 'edit_requested') && (
                     <button
+                      onClick={() => onEditReport ? onEditReport(report.id) : setSelectedReport(report)}
                       title="Continue Editing"
                       className="p-2 text-gray-500 hover:text-[#1F3864] hover:bg-gray-100 rounded-lg"
                     >
@@ -168,6 +177,83 @@ export function MyReports() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {selectedReport && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-[#1F3864]">
+                {selectedReport.month} {selectedReport.year} Report
+              </h3>
+              <button onClick={() => setSelectedReport(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><span className="font-semibold text-gray-500">HOD:</span> {selectedReport.hod_name}</div>
+                <div><span className="font-semibold text-gray-500">Status:</span> {selectedReport.status}</div>
+                <div><span className="font-semibold text-gray-500">Date:</span> {selectedReport.date_submitted || 'N/A'}</div>
+                <div><span className="font-semibold text-gray-500">Submitted:</span> {selectedReport.submitted_at ? new Date(selectedReport.submitted_at).toLocaleDateString() : 'N/A'}</div>
+              </div>
+              {selectedReport.comments_a && (
+                <div>
+                  <h4 className="text-sm font-semibold text-[#1F3864] mb-1">General Comment</h4>
+                  <p className="text-sm text-gray-700">{selectedReport.comments_a}</p>
+                </div>
+              )}
+              {selectedReport.comments_b && (
+                <div>
+                  <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Key Observations</h4>
+                  <p className="text-sm text-gray-700">{selectedReport.comments_b}</p>
+                </div>
+              )}
+              {selectedReport.comments_c && (
+                <div>
+                  <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Way Forward</h4>
+                  <p className="text-sm text-gray-700">{selectedReport.comments_c}</p>
+                </div>
+              )}
+              {(selectedReport.achievements || []).filter(Boolean).length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Achievements</h4>
+                  <ul className="text-sm text-gray-700 space-y-1">
+                    {(selectedReport.achievements || []).filter(Boolean).map((a, i) => (
+                      <li key={i}>{i + 1}. {a}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(selectedReport.challenges || []).filter(Boolean).length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Challenges</h4>
+                  <ul className="text-sm text-gray-700 space-y-1">
+                    {(selectedReport.challenges || []).filter(Boolean).map((c, i) => (
+                      <li key={i}>{i + 1}. {c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(selectedReport.status === 'draft' || selectedReport.status === 'edit_requested') && (
+                <div className="pt-4 border-t">
+                  <button
+                    onClick={() => {
+                      if (onEditReport) {
+                        onEditReport(selectedReport.id);
+                      }
+                      setSelectedReport(null);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-[#1F3864] text-white rounded-lg hover:bg-[#162a4e]"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    Continue Editing
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
