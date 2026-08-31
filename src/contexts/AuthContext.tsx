@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { Bolt Database, configError } from '../lib/supabase';
-import type { User, Session } from '@supabase/Bolt Database-js';
+import { supabase, configError } from '../lib/supabase';
+import type { User, Session } from '@supabase/supabase-js';
 import type { UserProfile, UserRole } from '../lib/types';
 
 interface AuthContextType {
@@ -26,52 +26,107 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(configError);
 
   useEffect(() => {
-    if (!Bolt Database) {
+    if (!supabase) {
       setLoading(false);
       return;
     }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
 
       if (session?.user) {
-        await fetchProfile(session.user.id);
+        (async () => {
+          await fetchProfile(session.user.id);
+          setLoading(false);
+        })();
       } else {
         setProfile(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id);
+        fetchProfile(session.user.id).then(() => setLoading(false));
+      } else {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   const fetchProfile = async (userId: string) => {
-    if (!Bolt Database) return;
-    const { data, error } = await Bolt Database
+    if (!supabase) return;
+
+    // 1. Try to fetch existing profile
+    const { data: existing, error: fetchError } = await supabase
       .from('user_profiles')
       .select('*')
       .eq('id', userId)
       .maybeSingle();
 
-    if (error) {
-      console.error('Error fetching profile:', error);
-    } else {
-      setProfile(data);
+    if (fetchError) {
+      console.error('Error fetching profile:', fetchError);
+      return;
     }
+
+    if (existing) {
+      setProfile(existing);
+      return;
+    }
+
+    // 2. No profile yet — try to auto-create one by matching the auth email to a department HOD
+    const { data: userData } = await supabase.auth.getUser();
+    const authEmail = userData?.user?.email;
+    if (!authEmail) return;
+
+    const { data: dept } = await supabase
+      .from('departments')
+      .select('*')
+      .eq('hod_email', authEmail)
+      .maybeSingle();
+
+    if (dept) {
+      const newProfile = {
+        id: userId,
+        email: authEmail,
+        full_name: dept.hod_name,
+        role: 'hod' as const,
+        department_id: dept.id,
+      };
+      const { data: inserted, error: insertError } = await supabase
+        .from('user_profiles')
+        .insert(newProfile)
+        .select()
+        .maybeSingle();
+
+      if (insertError) {
+        console.error('Error auto-creating profile:', insertError);
+      } else if (inserted) {
+        setProfile(inserted);
+        return;
+      }
+    }
+
+    // 3. Fallback: build a minimal profile from auth user metadata
+    const meta = userData?.user?.user_metadata;
+    setProfile({
+      id: userId,
+      email: authEmail,
+      full_name: meta?.full_name || authEmail.split('@')[0],
+      role: meta?.role || 'hod',
+      department_id: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
   };
 
   const signIn = async (email: string, password: string) => {
-    if (!Bolt Database) throw new Error('Supabase not configured');
+    if (!supabase) throw new Error('Supabase not configured');
     setError(null);
     setLoading(true);
 
@@ -91,7 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     role: UserRole,
     departmentId?: string
   ) => {
-    if (!Bolt Database) throw new Error('Supabase not configured');
+    if (!supabase) throw new Error('Supabase not configured');
     setError(null);
     setLoading(true);
 
@@ -113,7 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (data.user) {
-      const { error: profileError } = await Bolt Database
+      const { error: profileError } = await supabase
         .from('user_profiles')
         .insert({
           id: data.user.id,
@@ -134,7 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
-    if (!Bolt Database) return;
+    if (!supabase) return;
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
