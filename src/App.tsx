@@ -8,10 +8,17 @@ import { EditRequestsManager } from './components/EditRequests';
 import { DataManagement } from './components/DataManagement';
 import { UserManagement } from './components/UserManagement';
 import { MyReports } from './components/MyReports';
+import { CompiledReport } from './components/CompiledReport';
 
 function AppContent() {
-  const { user, profile, loading, error, isAdmin, isHod } = useAuth();
+  const { user, profile, loading, error, isAdmin } = useAuth();
   const [activeView, setActiveView] = useState('');
+
+  useEffect(() => {
+    if (profile) {
+      setActiveView(isAdmin ? 'dashboard' : 'report');
+    }
+  }, [profile, isAdmin]);
 
   if (error) {
     return (
@@ -32,13 +39,6 @@ function AppContent() {
     );
   }
 
-  useEffect(() => {
-    if (profile) {
-      // Set default view based on role
-      setActiveView(isAdmin ? 'dashboard' : 'report');
-    }
-  }, [profile, isAdmin]);
-
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
@@ -56,7 +56,6 @@ function AppContent() {
 
   const renderContent = () => {
     switch (activeView) {
-      // HOD Views
       case 'report':
         return <HodReportForm />;
       case 'history':
@@ -64,7 +63,6 @@ function AppContent() {
       case 'drafts':
         return <MyReports />;
 
-      // Admin Views
       case 'dashboard':
         return <AdminDashboard />;
       case 'reports':
@@ -87,56 +85,6 @@ function AppContent() {
     <Layout activeView={activeView} onViewChange={setActiveView}>
       {renderContent()}
     </Layout>
-  );
-}
-
-// Compiled Report Component (simplified)
-function CompiledReport() {
-  const [selectedMonth, setSelectedMonth] = useState('June');
-  const [selectedYear, setSelectedYear] = useState(2026);
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-[#1F3864]">Assistant Deputy Academic Report</h2>
-          <p className="text-sm text-gray-500">Compiled from all HOD monthly reports</p>
-        </div>
-
-        <div className="flex gap-3">
-          <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-lg"
-          >
-            {['January', 'February', 'March', 'April', 'May', 'June',
-              'July', 'August', 'September', 'October', 'November', 'December'
-            ].map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(parseInt(e.target.value))}
-            className="px-3 py-2 border border-gray-300 rounded-lg"
-          >
-            {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
-          <button
-            className="flex items-center gap-2 px-4 py-2 bg-[#1F3864] text-white rounded-lg hover:bg-[#162a4e]"
-          >
-            Generate Report
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-lg shadow p-8 text-center">
-        <p className="text-gray-500 mb-4">
-          Select a month and year, then click "Generate Report" to compile all HOD reports.
-        </p>
-        <p className="text-xs text-gray-400">
-          This will aggregate data from all 7 departments for {selectedMonth} {selectedYear}.
-        </p>
-      </div>
-    </div>
   );
 }
 
