@@ -1,7 +1,153 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { Department, HodReport, HodIssue, HodCurriculum, HodExamResult, HodHwTeacher, HodStaffChecklist } from '../lib/types';
-import { MONTHS, FORMS, GRADES } from '../lib/types';
+import { FORMS } from '../lib/types';
+
+interface CompiledPDFData {
+  month: string;
+  year: number;
+  reports: (HodReport & { department?: Department })[];
+  departments: Department[];
+  issues: HodIssue[];
+  curriculum: HodCurriculum[];
+  examResults: HodExamResult[];
+  hwTeachers: HodHwTeacher[];
+  staffChecklist: HodStaffChecklist[];
+}
+
+export function generateCompiledPDF(data: CompiledPDFData) {
+  const doc = new jsPDF() as any;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const navy: [number, number, number] = [31, 56, 100];
+  const gold: [number, number, number] = [201, 168, 76];
+
+  doc.setFillColor(...navy);
+  doc.rect(0, 0, pageWidth, 35, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(20);
+  doc.setFont('helvetica', 'bold');
+  doc.text('School of St. Jude', 14, 15);
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Assistant Deputy Academic Report (Compiled)', 14, 23);
+  doc.text(`${data.month} ${data.year}`, 14, 30);
+
+  doc.setFillColor(...gold);
+  const badgeWidth = 60;
+  const badgeX = pageWidth - badgeWidth - 14;
+  doc.roundedRect(badgeX, 8, badgeWidth, 20, 3, 3, 'F');
+  doc.setTextColor(...navy);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`${data.reports.length}/7 Departments`, badgeX + badgeWidth / 2, 18, { align: 'center' });
+
+  doc.setTextColor(0, 0, 0);
+  let yPos = 45;
+
+  yPos = addSectionHeader(doc, yPos, 'Department Report Summary', navy);
+  yPos += 8;
+
+  autoTable(doc, {
+    startY: yPos,
+    head: [['Department', 'HOD', 'Status', 'Achievements', 'Challenges']],
+    body: data.reports.map(r => [
+      r.department?.name || r.department_id,
+      r.hod_name,
+      r.status,
+      (r.achievements || []).filter(Boolean).length.toString(),
+      (r.challenges || []).filter(Boolean).length.toString()
+    ]),
+    theme: 'striped',
+    headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 8 },
+    bodyStyles: { fontSize: 7 },
+    margin: { left: 14, right: 14 }
+  });
+
+  yPos = (doc as any).lastAutoTable.finalY + 10;
+
+  data.reports.forEach((report) => {
+    checkNewPage(doc, yPos, 60);
+    yPos = addSectionHeader(doc, yPos, `${report.department?.name || report.department_id} - ${report.hod_name}`, navy);
+    yPos += 8;
+
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Achievements:', 14, yPos);
+    yPos += 4;
+    doc.setFont('helvetica', 'normal');
+    (report.achievements || []).filter(Boolean).forEach((a, i) => {
+      const lines = doc.splitTextToSize(`${i + 1}. ${a}`, pageWidth - 28);
+      doc.text(lines, 14, yPos);
+      yPos += lines.length * 4;
+    });
+    if ((report.achievements || []).filter(Boolean).length === 0) {
+      doc.text('None recorded', 14, yPos);
+      yPos += 4;
+    }
+
+    yPos += 4;
+    doc.setFont('helvetica', 'bold');
+    doc.text('Challenges:', 14, yPos);
+    yPos += 4;
+    doc.setFont('helvetica', 'normal');
+    (report.challenges || []).filter(Boolean).forEach((c, i) => {
+      const lines = doc.splitTextToSize(`${i + 1}. ${c}`, pageWidth - 28);
+      doc.text(lines, 14, yPos);
+      yPos += lines.length * 4;
+    });
+    if ((report.challenges || []).filter(Boolean).length === 0) {
+      doc.text('None recorded', 14, yPos);
+      yPos += 4;
+    }
+
+    yPos += 6;
+    if (report.comments_a) {
+      doc.setFont('helvetica', 'bold');
+      doc.text('General Comment:', 14, yPos);
+      yPos += 4;
+      doc.setFont('helvetica', 'normal');
+      const lines = doc.splitTextToSize(report.comments_a, pageWidth - 28);
+      doc.text(lines, 14, yPos);
+      yPos += lines.length * 4 + 4;
+    }
+    if (report.comments_b) {
+      doc.setFont('helvetica', 'bold');
+      doc.text('Key Observations:', 14, yPos);
+      yPos += 4;
+      doc.setFont('helvetica', 'normal');
+      const lines = doc.splitTextToSize(report.comments_b, pageWidth - 28);
+      doc.text(lines, 14, yPos);
+      yPos += lines.length * 4 + 4;
+    }
+    if (report.comments_c) {
+      doc.setFont('helvetica', 'bold');
+      doc.text('Way Forward:', 14, yPos);
+      yPos += 4;
+      doc.setFont('helvetica', 'normal');
+      const lines = doc.splitTextToSize(report.comments_c, pageWidth - 28);
+      doc.text(lines, 14, yPos);
+      yPos += lines.length * 4 + 8;
+    }
+
+    yPos += 4;
+  });
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(
+      `School of St. Jude - Compiled Academic Report - ${data.month} ${data.year}`,
+      pageWidth / 2,
+      doc.internal.pageSize.getHeight() - 10,
+      { align: 'center' }
+    );
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - 14, doc.internal.pageSize.getHeight() - 10, { align: 'right' });
+  }
+
+  doc.save(`Compiled_Report_${data.month}_${data.year}.pdf`);
+}
 
 interface ReportPDFData {
   report: HodReport;
@@ -20,9 +166,8 @@ export function generateReportPDF(data: ReportPDFData) {
   const doc = new jsPDF() as any;
   const pageWidth = doc.internal.pageSize.getWidth();
 
-  // Colors
-  const navy = [31, 56, 100];
-  const gold = [201, 168, 76];
+  const navy: [number, number, number] = [31, 56, 100];
+  const gold: [number, number, number] = [201, 168, 76];
 
   // Header
   doc.setFillColor(...navy);
@@ -77,7 +222,7 @@ export function generateReportPDF(data: ReportPDFData) {
     head: [['Area of Focus', 'Frequency', 'Remarks']],
     body: data.issues.map(i => [i.area_of_focus, i.frequency.toString(), i.remarks || '-']),
     theme: 'striped',
-    headStyles: { fillColor: navy, textColor: [255, 255, 255], fontSize: 8 },
+    headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 8 },
     bodyStyles: { fontSize: 7 },
     columnStyles: {
       0: { cellWidth: 80 },
@@ -108,7 +253,7 @@ export function generateReportPDF(data: ReportPDFData) {
       c.remarks || '-'
     ]),
     theme: 'striped',
-    headStyles: { fillColor: navy, textColor: [255, 255, 255], fontSize: 7 },
+    headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 7 },
     bodyStyles: { fontSize: 6 },
     margin: { left: 14, right: 14 }
   });
@@ -143,7 +288,7 @@ export function generateReportPDF(data: ReportPDFData) {
         e.below_kpi.toString()
       ]),
       theme: 'grid',
-      headStyles: { fillColor: navy, textColor: [255, 255, 255], fontSize: 7 },
+      headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 7 },
       bodyStyles: { fontSize: 7 },
       margin: { left: 14, right: 14 },
       didDrawPage: () => {
@@ -206,7 +351,7 @@ export function generateReportPDF(data: ReportPDFData) {
     head: [['Form', 'Expected', 'Marked', 'HW %', 'Tests']],
     body: hwSummary,
     theme: 'striped',
-    headStyles: { fillColor: navy, textColor: [255, 255, 255], fontSize: 8 },
+    headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 8 },
     bodyStyles: { fontSize: 8, halign: 'center' },
     margin: { left: 14, right: 14 }
   });
@@ -239,7 +384,7 @@ export function generateReportPDF(data: ReportPDFData) {
       ['Missed Lessons', staffYesCount.missed.toString()]
     ],
     theme: 'grid',
-    headStyles: { fillColor: navy, textColor: [255, 255, 255], fontSize: 8 },
+    headStyles: { fillColor: navy as [number, number, number], textColor: [255, 255, 255], fontSize: 8 },
     bodyStyles: { fontSize: 8 },
     margin: { left: 14, right: 14 }
   });
