@@ -75,8 +75,8 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const [reportStatus, setReportStatus] = useState<'draft' | 'submitted' | 'edit_requested'>('draft');
   const [currentReportId, setCurrentReportId] = useState<string | null>(reportId || null);
 
-  // Section collapse state
-  const [openSections, setOpenSections] = useState<number[]>([1]);
+  // Section collapse state - all open by default
+  const [openSections, setOpenSections] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
 
   const departmentId = profile?.department_id;
   const department = departments.find(d => d.id === departmentId);
@@ -121,20 +121,25 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
   const loadDepartments = async () => {
     if (!supabase) return;
-    const { data } = await supabase.from('departments').select('*');
-    if (data) setDepartments(data);
+    const { data, error } = await supabase.from('departments').select('*');
+    if (error) {
+      console.error('Error loading departments:', error);
+    } else if (data) {
+      setDepartments(data);
+    }
   };
 
   const loadTeachers = async () => {
     if (!supabase || !departmentId) return;
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('teachers')
       .select('*')
       .eq('department_id', departmentId)
       .order('name');
-    if (data) {
+    if (error) {
+      console.error('Error loading teachers:', error);
+    } else if (data) {
       setTeachers(data);
-      // Extract unique staff names
       const names = [...new Set(data.map(t => t.name))];
       setStaffNames(names);
     }
@@ -142,12 +147,16 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
   const loadSubjects = async () => {
     if (!supabase || !departmentId) return;
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('subjects')
       .select('*')
       .eq('department_id', departmentId)
       .order('subject_name, form');
-    if (data) setSubjects(data);
+    if (error) {
+      console.error('Error loading subjects:', error);
+    } else if (data) {
+      setSubjects(data);
+    }
   };
 
   const loadReport = async (id: string) => {
@@ -204,7 +213,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       frequency: 0,
       remarks: ''
     }));
-    setIssues(prev => prev.length === 0 || !reportId ? initIssues : prev);
+    setIssues(!reportId ? initIssues : prev => prev);
 
     // Initialize curriculum
     const initCurriculum: HodCurriculum[] = subjects.map(s => {
@@ -225,7 +234,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         remarks: ''
       };
     });
-    setCurriculum(prev => prev.length === 0 || !reportId ? initCurriculum : prev);
+    setCurriculum(!reportId ? initCurriculum : prev => prev);
 
     // Initialize exam results for each unique subject/form combo
     const uniqueSubjectForms = [...new Set(subjects.map(s => `${s.subject}-${s.form}`))];
@@ -243,7 +252,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         below_kpi: 0
       };
     });
-    setExamResults(prev => prev.length === 0 || !reportId ? initExams : prev);
+    setExamResults(!reportId ? initExams : prev => prev);
 
     // Initialize below KPI
     const initBelowKpi: HodBelowKpi[] = subjects.map(s => ({
@@ -256,7 +265,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       support_given: '',
       frequency: 0
     }));
-    setBelowKpi(prev => prev.length === 0 || !reportId ? initBelowKpi : prev);
+    setBelowKpi(!reportId ? initBelowKpi : prev => prev);
 
     // Initialize HW teachers
     const initHwTeachers: HodHwTeacher[] = teachers.map(t => ({
@@ -277,7 +286,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       real_practicals: 0,
       calling_parents: 0
     }));
-    setHwTeachers(prev => prev.length === 0 || !reportId ? initHwTeachers : prev);
+    setHwTeachers(!reportId ? initHwTeachers : prev => prev);
 
     // Initialize staff checklist
     const initStaff = staffNames.map((name, i) => ({
@@ -294,7 +303,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       missed_lessons: 'NO',
       reason_for_missing: ''
     }));
-    setStaffChecklist(prev => prev.length === 0 || !reportId ? initStaff : prev);
+    setStaffChecklist(!reportId ? initStaff : prev => prev);
   };
 
   // Helper functions
@@ -459,13 +468,15 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       }
 
       if (reportIdToUse) {
-        await supabase.from('hod_reports').update(reportData).eq('id', reportIdToUse);
+        const { error: updateError } = await supabase.from('hod_reports').update(reportData).eq('id', reportIdToUse);
+        if (updateError) throw new Error(updateError.message);
       } else {
-        const { data: newReport } = await supabase
+        const { data: newReport, error: insertError } = await supabase
           .from('hod_reports')
           .insert(reportData)
           .select()
           .maybeSingle();
+        if (insertError) throw new Error(insertError.message);
         if (newReport) {
           reportIdToUse = newReport.id;
           setCurrentReportId(newReport.id);
@@ -474,8 +485,151 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
       if (!reportIdToUse) throw new Error('Failed to create report');
 
-      // Save related data (simplified - would normally upsert)
-      // In production, you'd use upsert or delete + insert
+      // Delete existing child rows then re-insert (clean replace strategy)
+      await Promise.all([
+        supabase.from('hod_issues').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_curriculum').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_exam_results').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_below_kpi').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_hw_teachers').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_staff_checklist').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_support_requests').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_issues_for_deputy').delete().eq('report_id', reportIdToUse),
+        supabase.from('hod_bonus_recommendations').delete().eq('report_id', reportIdToUse),
+      ]);
+
+      // Insert all child data
+      const monthIndex = MONTHS.indexOf(selectedMonth) + 1;
+
+      const issuesToInsert = issues.map(iss => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        month: selectedMonth,
+        year: selectedYear,
+        area_of_focus: iss.area_of_focus,
+        frequency: iss.frequency || 0,
+        remarks: iss.remarks || null
+      }));
+
+      const curriculumToInsert = curriculum.map(c => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        subject: c.subject,
+        form: c.form,
+        level: c.level,
+        topics_total: c.topics_total,
+        topics_covered: c.topics_covered || 0,
+        topics_pending: c.topics_pending || 0,
+        coverage_pct: c.coverage_pct || 0,
+        term: c.term || null,
+        required_pct: c.required_pct || 0,
+        remarks: c.remarks || null
+      }));
+
+      const examsToInsert = examResults.map(e => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        subject: e.subject,
+        form: e.form,
+        grade_a: e.grade_a || 0,
+        grade_b: e.grade_b || 0,
+        grade_c: e.grade_c || 0,
+        grade_d: e.grade_d || 0,
+        grade_e: e.grade_e || 0,
+        grade_s: e.grade_s || 0,
+        grade_f: e.grade_f || 0,
+        total: e.total || 0,
+        kpi_pct: e.kpi_pct || 0,
+        below_kpi: e.below_kpi || 0
+      }));
+
+      const belowKpiToInsert = belowKpi.map(k => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        subject: k.subject,
+        form: k.form,
+        students_below_kpi: k.students_below_kpi || 0,
+        support_given: k.support_given || null,
+        frequency: k.frequency || 0
+      }));
+
+      const hwToInsert = hwTeachers.map(h => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        teacher_name: h.teacher_name,
+        subject: h.subject,
+        class_name: h.class_name,
+        form: h.form,
+        base_hw: h.base_hw || 4,
+        exam_in_month: h.exam_in_month || 'NO',
+        expected_hw: h.expected_hw || 0,
+        marked_hw: h.marked_hw || 0,
+        hw_pct: h.hw_pct || 0,
+        tests_admin: h.tests_admin || 0,
+        demo_practicals: h.demo_practicals || 0,
+        real_practicals: h.real_practicals || 0,
+        calling_parents: h.calling_parents || 0
+      }));
+
+      const staffToInsert = staffChecklist.map(s => ({
+        report_id: reportIdToUse,
+        department_id: departmentId,
+        staff_name: s.staff_name,
+        lp_updated: s.lp_updated || '',
+        logbook_updated: s.logbook_updated || '',
+        scheme_updated: s.scheme_updated || '',
+        date_checked: s.date_checked || null,
+        one_one_done: s.one_one_done || '',
+        teaching_aid_used: s.teaching_aid_used || '',
+        missed_lessons: s.missed_lessons || 'NO',
+        reason_for_missing: s.reason_for_missing || null
+      }));
+
+      const supportToInsert = supportRequests
+        .filter(sr => sr.staff || sr.issue || sr.suggestion)
+        .map(sr => ({
+          report_id: reportIdToUse,
+          department_id: departmentId,
+          staff_name: sr.staff || null,
+          issue: sr.issue || null,
+          suggestion: sr.suggestion || null
+        }));
+
+      const deputyToInsert = issuesForDeputy
+        .filter(iss => iss.title || iss.description)
+        .map(iss => ({
+          report_id: reportIdToUse,
+          department_id: departmentId,
+          title: iss.title || null,
+          description: iss.description || null
+        }));
+
+      const bonusToInsert = bonusRecommendations
+        .filter(rec => rec.staff || rec.reasons)
+        .map(rec => ({
+          report_id: reportIdToUse,
+          department_id: departmentId,
+          staff_name: rec.staff || null,
+          reasons: rec.reasons || null
+        }));
+
+      const insertPromises: Promise<any>[] = [];
+      if (issuesToInsert.length) insertPromises.push(supabase.from('hod_issues').insert(issuesToInsert));
+      if (curriculumToInsert.length) insertPromises.push(supabase.from('hod_curriculum').insert(curriculumToInsert));
+      if (examsToInsert.length) insertPromises.push(supabase.from('hod_exam_results').insert(examsToInsert));
+      if (belowKpiToInsert.length) insertPromises.push(supabase.from('hod_below_kpi').insert(belowKpiToInsert));
+      if (hwToInsert.length) insertPromises.push(supabase.from('hod_hw_teachers').insert(hwToInsert));
+      if (staffToInsert.length) insertPromises.push(supabase.from('hod_staff_checklist').insert(staffToInsert));
+      if (supportToInsert.length) insertPromises.push(supabase.from('hod_support_requests').insert(supportToInsert));
+      if (deputyToInsert.length) insertPromises.push(supabase.from('hod_issues_for_deputy').insert(deputyToInsert));
+      if (bonusToInsert.length) insertPromises.push(supabase.from('hod_bonus_recommendations').insert(bonusToInsert));
+
+      const insertResults = await Promise.all(insertPromises);
+      const insertErrors = insertResults.filter(r => r.error);
+      if (insertErrors.length > 0) {
+        console.error('Errors saving child data:', insertErrors);
+        throw new Error('Failed to save some report sections: ' + insertErrors.map((e: any) => e.error.message).join('; '));
+      }
 
       alert('Draft saved successfully!');
       if (onSaved && reportIdToUse) onSaved(reportIdToUse);
@@ -498,13 +652,15 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
     setSaving(true);
     try {
-      await supabase
+      const { error: submitError } = await supabase
         .from('hod_reports')
         .update({
           status: 'submitted',
           submitted_at: new Date().toISOString()
         })
         .eq('id', currentReportId);
+
+      if (submitError) throw new Error(submitError.message);
 
       setReportStatus('submitted');
       alert('Report submitted successfully!');
