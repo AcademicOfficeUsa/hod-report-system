@@ -1,13 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import type { UserRole } from '../lib/types';
+import { supabase } from '../lib/supabase';
+import type { UserRole, Department } from '../lib/types';
 import { GraduationCap, Eye, EyeOff, UserPlus, LogIn } from 'lucide-react';
 
 const ROLES: { value: UserRole; label: string }[] = [
-  { value: 'hod', label: 'Head of Department (HOD)' },
-  { value: 'assistant_deputy', label: 'Assistant Deputy Headmaster' },
-  { value: 'deputy', label: 'Deputy Headmaster' },
-  { value: 'headmaster', label: 'Headmaster' }
+  { value: 'hod', label: 'Head of Department (HOD)' }
 ];
 
 export function AuthPage() {
@@ -16,12 +14,27 @@ export function AuthPage() {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<UserRole>('hod');
+  const [departmentId, setDepartmentId] = useState<string>('');
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const { signIn, signUp } = useAuth();
+
+  // Load departments for signup
+  useEffect(() => {
+    if (isSignUp && supabase) {
+      supabase.from('departments').select('*').order('name').then(({ data, error }) => {
+        if (error) {
+          console.error('Error loading departments:', error);
+        } else if (data) {
+          setDepartments(data);
+        }
+      });
+    }
+  }, [isSignUp]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,7 +44,11 @@ export function AuthPage() {
 
     try {
       if (isSignUp) {
-        await signUp(email, password, fullName, role);
+        // Validate department for HOD role
+        if (role === 'hod' && !departmentId) {
+          throw new Error('Please select a department for HOD role');
+        }
+        await signUp(email, password, fullName, role, role === 'hod' ? departmentId : undefined);
         setSuccess('Account created successfully! You can now sign in.');
         setIsSignUp(false);
       } else {
@@ -129,6 +146,27 @@ export function AuthPage() {
                     ))}
                   </select>
                 </div>
+
+                {role === 'hod' && (
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-[#1F3864] mb-1">
+                      Department
+                    </label>
+                    <select
+                      value={departmentId}
+                      onChange={(e) => setDepartmentId(e.target.value)}
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1F3864] focus:border-transparent outline-none transition bg-white"
+                      required
+                    >
+                      <option value="">Select your department...</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </>
             )}
 
