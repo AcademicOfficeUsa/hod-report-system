@@ -167,6 +167,37 @@ export interface HodStaffChecklist {
   reason_for_missing: string | null;
 }
 
+// Support Request Types (Section 9)
+export interface HodSupportRequest {
+  id: string;
+  report_id: string;
+  department_id: string;
+  staff_name: string | null;
+  issue: string | null;
+  suggestion: string | null;
+  created_at: string;
+}
+
+// Issues for Deputy Types (Section 11)
+export interface HodIssueForDeputy {
+  id: string;
+  report_id: string;
+  department_id: string;
+  title: string | null;
+  description: string | null;
+  created_at: string;
+}
+
+// Bonus Recommendation Types (Section 12)
+export interface HodBonusRecommendation {
+  id: string;
+  report_id: string;
+  department_id: string;
+  staff_name: string | null;
+  reasons: string | null;
+  created_at: string;
+}
+
 // Edit Request Types
 export type EditRequestStatus = 'pending' | 'approved' | 'rejected';
 
