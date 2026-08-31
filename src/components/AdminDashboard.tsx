@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import type { HodReport, Department } from '../lib/types';
+import type { HodReport, Department, HodIssue, HodCurriculum, HodExamResult, HodHwTeacher, HodStaffChecklist } from '../lib/types';
 import { MONTHS } from '../lib/types';
 import {
-  FileText, Clock, CheckCircle, AlertCircle, Search, Filter, Eye, Edit, Download
+  FileText, Clock, CheckCircle, AlertCircle, Search, Filter, Eye, Edit, Download, X
 } from 'lucide-react';
+import { generateReportPDF } from '../lib/pdfGenerator';
 
 export function AdminDashboard() {
   const [reports, setReports] = useState<HodReport[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filters
   const [deptFilter, setDeptFilter] = useState('all');
@@ -18,18 +20,26 @@ export function AdminDashboard() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // View modal
+  const [viewingReport, setViewingReport] = useState<HodReport | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+
   useEffect(() => {
     loadData();
   }, [deptFilter, monthFilter, yearFilter, statusFilter]);
 
   const loadData = async () => {
     setLoading(true);
+    setLoadError(null);
 
-    // Load departments
-    const { data: depts } = await supabase.from('departments').select('*');
+    const { data: depts, error: deptError } = await supabase.from('departments').select('*');
+    if (deptError) {
+      setLoadError('Failed to load departments: ' + deptError.message);
+      setLoading(false);
+      return;
+    }
     if (depts) setDepartments(depts);
 
-    // Build query
     let query = supabase
       .from('hod_reports')
       .select('*, department:departments(*)')
@@ -48,8 +58,12 @@ export function AdminDashboard() {
       query = query.eq('status', statusFilter);
     }
 
-    const { data } = await query;
-    if (data) setReports(data as HodReport[]);
+    const { data, error } = await query;
+    if (error) {
+      setLoadError('Failed to load reports: ' + error.message);
+    } else if (data) {
+      setReports(data as HodReport[]);
+    }
 
     setLoading(false);
   };
@@ -77,6 +91,74 @@ export function AdminDashboard() {
     );
   });
 
+  const handleViewReport = async (report: HodReport) => {
+    setViewingReport(report);
+    setViewLoading(true);
+
+    try {
+      const [issuesRes, currRes, examRes, hwRes, staffRes] = await Promise.all([
+        supabase.from('hod_issues').select('*').eq('report_id', report.id),
+        supabase.from('hod_curriculum').select('*').eq('report_id', report.id),
+        supabase.from('hod_exam_results').select('*').eq('report_id', report.id),
+        supabase.from('hod_hw_teachers').select('*').eq('report_id', report.id),
+        supabase.from('hod_staff_checklist').select('*').eq('report_id', report.id),
+      ]);
+
+      const dept = departments.find(d => d.id === report.department_id);
+      if (!dept) return;
+
+      generateReportPDF({
+        report,
+        department: dept,
+        issues: issuesRes.data || [],
+        curriculum: currRes.data || [],
+        examResults: examRes.data || [],
+        hwTeachers: hwRes.data || [],
+        staffChecklist: staffRes.data || [],
+        comments: { a: report.comments_a || '', b: report.comments_b || '', c: report.comments_c || '' },
+        achievements: report.achievements || [],
+        challenges: report.challenges || [],
+      });
+    } catch (err: any) {
+      alert('Error loading report details: ' + err.message);
+    }
+
+    setViewLoading(false);
+  };
+
+  const handleDownloadPDF = async (report: HodReport) => {
+    try {
+      const [issuesRes, currRes, examRes, hwRes, staffRes] = await Promise.all([
+        supabase.from('hod_issues').select('*').eq('report_id', report.id),
+        supabase.from('hod_curriculum').select('*').eq('report_id', report.id),
+        supabase.from('hod_exam_results').select('*').eq('report_id', report.id),
+        supabase.from('hod_hw_teachers').select('*').eq('report_id', report.id),
+        supabase.from('hod_staff_checklist').select('*').eq('report_id', report.id),
+      ]);
+
+      const dept = departments.find(d => d.id === report.department_id);
+      if (!dept) {
+        alert('Department not found for this report');
+        return;
+      }
+
+      generateReportPDF({
+        report,
+        department: dept,
+        issues: issuesRes.data || [],
+        curriculum: currRes.data || [],
+        examResults: examRes.data || [],
+        hwTeachers: hwRes.data || [],
+        staffChecklist: staffRes.data || [],
+        comments: { a: report.comments_a || '', b: report.comments_b || '', c: report.comments_c || '' },
+        achievements: report.achievements || [],
+        challenges: report.challenges || [],
+      });
+    } catch (err: any) {
+      alert('Error generating PDF: ' + err.message);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'submitted':
@@ -102,7 +184,7 @@ export function AdminDashboard() {
         );
       case 'approved':
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+          <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
             <CheckCircle className="w-3 h-3" />
             Approved
           </span>
@@ -193,6 +275,13 @@ export function AdminDashboard() {
         </div>
       </div>
 
+      {/* Error message */}
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
+          {loadError}
+        </div>
+      )}
+
       {/* Reports Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
         {loading ? (
@@ -244,18 +333,14 @@ export function AdminDashboard() {
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-center gap-2">
                         <button
-                          title="View Report"
+                          onClick={() => handleViewReport(report)}
+                          title="View & Download PDF"
                           className="p-1.5 text-gray-500 hover:text-[#1F3864] hover:bg-gray-100 rounded"
                         >
                           <Eye className="w-4 h-4" />
                         </button>
                         <button
-                          title="Edit Report"
-                          className="p-1.5 text-gray-500 hover:text-[#1F3864] hover:bg-gray-100 rounded"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
-                        <button
+                          onClick={() => handleDownloadPDF(report)}
                           title="Download PDF"
                           className="p-1.5 text-gray-500 hover:text-[#1F3864] hover:bg-gray-100 rounded"
                         >
@@ -270,6 +355,89 @@ export function AdminDashboard() {
           </div>
         )}
       </div>
+
+      {/* View Modal */}
+      {viewingReport && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-[#1F3864]">
+                {departments.find(d => d.id === viewingReport.department_id)?.name || viewingReport.department_id} - {viewingReport.month} {viewingReport.year}
+              </h3>
+              <button onClick={() => setViewingReport(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              {viewLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-8 h-8 border-3 border-[#1F3864] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div><span className="font-semibold text-gray-500">HOD:</span> {viewingReport.hod_name}</div>
+                    <div><span className="font-semibold text-gray-500">Status:</span> {viewingReport.status}</div>
+                    <div><span className="font-semibold text-gray-500">Date:</span> {viewingReport.date_submitted || 'N/A'}</div>
+                    <div><span className="font-semibold text-gray-500">Submitted:</span> {viewingReport.submitted_at ? new Date(viewingReport.submitted_at).toLocaleDateString() : 'N/A'}</div>
+                  </div>
+
+                  {viewingReport.comments_a && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#1F3864] mb-1">General Comment</h4>
+                      <p className="text-sm text-gray-700">{viewingReport.comments_a}</p>
+                    </div>
+                  )}
+                  {viewingReport.comments_b && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Key Observations</h4>
+                      <p className="text-sm text-gray-700">{viewingReport.comments_b}</p>
+                    </div>
+                  )}
+                  {viewingReport.comments_c && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Way Forward</h4>
+                      <p className="text-sm text-gray-700">{viewingReport.comments_c}</p>
+                    </div>
+                  )}
+
+                  {(viewingReport.achievements || []).filter(Boolean).length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Achievements</h4>
+                      <ul className="text-sm text-gray-700 space-y-1">
+                        {(viewingReport.achievements || []).filter(Boolean).map((a, i) => (
+                          <li key={i}>{i + 1}. {a}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(viewingReport.challenges || []).filter(Boolean).length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-[#1F3864] mb-1">Challenges</h4>
+                      <ul className="text-sm text-gray-700 space-y-1">
+                        {(viewingReport.challenges || []).filter(Boolean).map((c, i) => (
+                          <li key={i}>{i + 1}. {c}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="pt-4 border-t">
+                    <button
+                      onClick={() => handleDownloadPDF(viewingReport)}
+                      className="flex items-center gap-2 px-4 py-2 bg-[#1F3864] text-white rounded-lg hover:bg-[#162a4e]"
+                    >
+                      <Download className="w-4 h-4" />
+                      Download Full PDF
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
