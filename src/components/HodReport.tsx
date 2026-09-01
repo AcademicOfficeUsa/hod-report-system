@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import type {
@@ -16,10 +16,17 @@ interface HodReportFormProps {
   onSubmit?: () => void;
 }
 
+// Helper to get filtered issue areas based on department type
+function getFilteredIssueAreas(isScience: boolean): string[] {
+  if (isScience) return ISSUE_AREAS;
+  return ISSUE_AREAS.filter(
+    area => area !== 'Demo Practicals done per Month' && area !== 'Real Practicals done per Month'
+  );
+}
+
 export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProps) {
   const { profile } = useAuth();
 
-  // State
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -28,36 +35,33 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const [staffNames, setStaffNames] = useState<string[]>([]);
   const [dataLoaded, setDataLoaded] = useState(false);
 
-  // Form State
   const [selectedMonth, setSelectedMonth] = useState(MONTHS[new Date().getMonth()]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [dateSubmitted, setDateSubmitted] = useState(new Date().toISOString().split('T')[0]);
 
-  // Report sections - Initialize with ISSUE_AREAS immediately
-  const [issues, setIssues] = useState<HodIssue[]>(() =>
-    ISSUE_AREAS.map((area, i) => ({
+  const [issues, setIssues] = useState<HodIssue[]>(() => {
+    const filtered = getFilteredIssueAreas(false);
+    return filtered.map((area, i) => ({
       id: `temp-issue-${i}`,
       report_id: '',
       department_id: '',
       area_of_focus: area,
       frequency: 0,
       remarks: ''
-    }))
-  );
+    }));
+  });
   const [curriculum, setCurriculum] = useState<HodCurriculum[]>([]);
   const [examResults, setExamResults] = useState<HodExamResult[]>([]);
   const [belowKpi, setBelowKpi] = useState<HodBelowKpi[]>([]);
   const [hwTeachers, setHwTeachers] = useState<HodHwTeacher[]>([]);
   const [staffChecklist, setStaffChecklist] = useState<HodStaffChecklist[]>([]);
 
-  // Comments
   const [commentA, setCommentA] = useState('');
   const [commentB, setCommentB] = useState('');
   const [commentC, setCommentC] = useState('');
   const [achievements, setAchievements] = useState<string[]>(['', '', '']);
   const [challenges, setChallenges] = useState<string[]>(['', '', '']);
 
-  // Support and Issue sections
   const [supportRequests, setSupportRequests] = useState<{ staff: string; issue: string; suggestion: string }[]>([
     { staff: '', issue: '', suggestion: '' },
     { staff: '', issue: '', suggestion: '' }
@@ -71,22 +75,21 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     { staff: '', reasons: '' }
   ]);
 
-  // Report status
   const [reportStatus, setReportStatus] = useState<'draft' | 'submitted' | 'edit_requested'>('draft');
   const [currentReportId, setCurrentReportId] = useState<string | null>(reportId || null);
-
-  // Section collapse state - all open by default
   const [openSections, setOpenSections] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
 
   const departmentId = profile?.department_id;
   const department = departments.find(d => d.id === departmentId);
   const isScience = department?.is_science || false;
-
-  // HOD info comes from user profile
   const hodName = profile?.full_name || '';
   const hodEmail = profile?.email || '';
 
-  // Load initial data
+  const getDraftKey = useCallback(() => {
+    if (!profile?.id || !departmentId) return null;
+    return `hod_draft_${profile.id}_${departmentId}_${selectedMonth}_${selectedYear}`;
+  }, [profile?.id, departmentId, selectedMonth, selectedYear]);
+
   useEffect(() => {
     if (!supabase) return;
     loadDepartments();
@@ -108,16 +111,110 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     }
   }, [teachers, subjects, selectedMonth]);
 
-  // Also initialize when departmentId becomes available
   useEffect(() => {
     if (departmentId) {
-      // Update issues with correct department_id
-      setIssues(prev => prev.map(issue => ({
-        ...issue,
-        department_id: departmentId
-      })));
+      const filtered = getFilteredIssueAreas(isScience);
+      setIssues(prev => {
+        if (prev.length > 0 && prev[0].report_id) {
+          if (!isScience) {
+            return prev.filter(
+              iss => iss.area_of_focus !== 'Demo Practicals done per Month' &&
+                     iss.area_of_focus !== 'Real Practicals done per Month'
+            ).map(issue => ({ ...issue, department_id: departmentId }));
+          }
+          return prev.map(issue => ({ ...issue, department_id: departmentId }));
+        }
+        return filtered.map((area, i) => ({
+          id: `temp-issue-${i}`,
+          report_id: '',
+          department_id: departmentId,
+          area_of_focus: area,
+          frequency: 0,
+          remarks: ''
+        }));
+      });
     }
-  }, [departmentId]);
+  }, [departmentId, isScience]);
+
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (reportId || reportStatus === 'submitted' || !dataLoaded) return;
+    const draftKey = getDraftKey();
+    if (!draftKey) return;
+    if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      const draftData = {
+        selectedMonth,
+        selectedYear,
+        dateSubmitted,
+        issues,
+        curriculum,
+        examResults,
+        belowKpi,
+        hwTeachers,
+        staffChecklist,
+        commentA,
+        commentB,
+        commentC,
+        achievements,
+        challenges,
+        supportRequests,
+        issuesForDeputy,
+        bonusRecommendations,
+        currentReportId,
+        savedAt: new Date().toISOString()
+      };
+      try {
+        localStorage.setItem(draftKey, JSON.stringify(draftData));
+      } catch (e) {
+        console.error('Failed to auto-save draft:', e);
+      }
+    }, 3000);
+    return () => {
+      if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+    };
+  }, [
+    selectedMonth, selectedYear, dateSubmitted, issues, curriculum, examResults,
+    belowKpi, hwTeachers, staffChecklist, commentA, commentB, commentC,
+    achievements, challenges, supportRequests, issuesForDeputy, bonusRecommendations,
+    currentReportId, reportId, reportStatus, dataLoaded, getDraftKey
+  ]);
+
+  useEffect(() => {
+    if (reportId || !departmentId || !dataLoaded) return;
+    const draftKey = getDraftKey();
+    if (!draftKey) return;
+    try {
+      const saved = localStorage.getItem(draftKey);
+      if (saved) {
+        const draftData = JSON.parse(saved);
+        if (draftData.selectedMonth === selectedMonth && draftData.selectedYear === selectedYear) {
+          if (window.confirm('A saved draft was found for this month. Would you like to restore it?')) {
+            if (draftData.dateSubmitted) setDateSubmitted(draftData.dateSubmitted);
+            if (draftData.issues) setIssues(draftData.issues);
+            if (draftData.curriculum) setCurriculum(draftData.curriculum);
+            if (draftData.examResults) setExamResults(draftData.examResults);
+            if (draftData.belowKpi) setBelowKpi(draftData.belowKpi);
+            if (draftData.hwTeachers) setHwTeachers(draftData.hwTeachers);
+            if (draftData.staffChecklist) setStaffChecklist(draftData.staffChecklist);
+            if (draftData.commentA !== undefined) setCommentA(draftData.commentA);
+            if (draftData.commentB !== undefined) setCommentB(draftData.commentB);
+            if (draftData.commentC !== undefined) setCommentC(draftData.commentC);
+            if (draftData.achievements) setAchievements(draftData.achievements);
+            if (draftData.challenges) setChallenges(draftData.challenges);
+            if (draftData.supportRequests) setSupportRequests(draftData.supportRequests);
+            if (draftData.issuesForDeputy) setIssuesForDeputy(draftData.issuesForDeputy);
+            if (draftData.bonusRecommendations) setBonusRecommendations(draftData.bonusRecommendations);
+            if (draftData.currentReportId) setCurrentReportId(draftData.currentReportId);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load draft:', e);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departmentId, dataLoaded, reportId]);
 
   const loadDepartments = async () => {
     if (!supabase) return;
@@ -161,14 +258,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
   const loadReport = async (id: string) => {
     setLoading(true);
-
-    // Load main report
     const { data: report } = await supabase
       .from('hod_reports')
       .select('*')
       .eq('id', id)
       .maybeSingle();
-
     if (report) {
       setReportStatus(report.status);
       setSelectedMonth(report.month);
@@ -179,8 +273,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       setCommentC(report.comments_c || '');
       setAchievements(report.achievements || ['', '', '']);
       setChallenges(report.challenges || ['', '', '']);
-
-      // Load related data
       const [issuesData, currData, examData, kpiData, hwData, staffData] = await Promise.all([
         supabase.from('hod_issues').select('*').eq('report_id', id),
         supabase.from('hod_curriculum').select('*').eq('report_id', id),
@@ -189,23 +281,29 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         supabase.from('hod_hw_teachers').select('*').eq('report_id', id),
         supabase.from('hod_staff_checklist').select('*').eq('report_id', id)
       ]);
-
-      if (issuesData.data) setIssues(issuesData.data);
+      if (issuesData.data) {
+        let loadedIssues = issuesData.data;
+        if (!isScience) {
+          loadedIssues = loadedIssues.filter(
+            (iss: HodIssue) => iss.area_of_focus !== 'Demo Practicals done per Month' &&
+                               iss.area_of_focus !== 'Real Practicals done per Month'
+          );
+        }
+        setIssues(loadedIssues);
+      }
       if (currData.data) setCurriculum(currData.data);
       if (examData.data) setExamResults(examData.data);
       if (kpiData.data) setBelowKpi(kpiData.data);
       if (hwData.data) setHwTeachers(hwData.data);
       if (staffData.data) setStaffChecklist(staffData.data);
     }
-
     setLoading(false);
   };
 
   const initializeSections = () => {
     const monthIndex = MONTHS.indexOf(selectedMonth) + 1;
-
-    // Initialize issues
-    const initIssues: HodIssue[] = ISSUE_AREAS.map((area, i) => ({
+    const filteredAreas = getFilteredIssueAreas(isScience);
+    const initIssues: HodIssue[] = filteredAreas.map((area, i) => ({
       id: `temp-${i}`,
       report_id: currentReportId || '',
       department_id: departmentId || '',
@@ -214,8 +312,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       remarks: ''
     }));
     setIssues(!reportId ? initIssues : prev => prev);
-
-    // Initialize curriculum
     const initCurriculum: HodCurriculum[] = subjects.map(s => {
       const reqPct = getRequiredPct(s.form, monthIndex);
       return {
@@ -235,8 +331,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       };
     });
     setCurriculum(!reportId ? initCurriculum : prev => prev);
-
-    // Initialize exam results for each unique subject/form combo
     const uniqueSubjectForms = [...new Set(subjects.map(s => `${s.subject}-${s.form}`))];
     const initExams: HodExamResult[] = uniqueSubjectForms.map((sf, i) => {
       const [subj, form] = sf.split('-');
@@ -253,8 +347,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       };
     });
     setExamResults(!reportId ? initExams : prev => prev);
-
-    // Initialize below KPI
     const initBelowKpi: HodBelowKpi[] = subjects.map(s => ({
       id: `temp-${s.id}`,
       report_id: currentReportId || '',
@@ -266,8 +358,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       frequency: 0
     }));
     setBelowKpi(!reportId ? initBelowKpi : prev => prev);
-
-    // Initialize HW teachers
     const initHwTeachers: HodHwTeacher[] = teachers.map(t => ({
       id: `temp-${t.id}`,
       report_id: currentReportId || '',
@@ -287,8 +377,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       calling_parents: 0
     }));
     setHwTeachers(!reportId ? initHwTeachers : prev => prev);
-
-    // Initialize staff checklist
     const initStaff = staffNames.map((name, i) => ({
       id: `temp-${i}`,
       report_id: currentReportId || '',
@@ -306,9 +394,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     setStaffChecklist(!reportId ? initStaff : prev => prev);
   };
 
-  // Helper functions
   const getRequiredPct = (form: string, month: number): number => {
-    // Simplified - would normally fetch from database
     const requirements: Record<string, number[]> = {
       'F1': [4, 7, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
       'F2': [10, 17, 25, 40, 55, 70, 50, 60, 70, 80, 90, 100],
@@ -330,11 +416,9 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
   const monthIndex = MONTHS.indexOf(selectedMonth) + 1;
 
-  // Calculations
   const calcCurriculum = (index: number, covered: number) => {
     const curr = curriculum[index];
     if (!curr) return;
-
     const pending = curr.topics_total - covered;
     const pct = curr.topics_total > 0 ? (covered / curr.topics_total) * 100 : 0;
     let remarks = '';
@@ -342,7 +426,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     else if (pct >= curr.required_pct) remarks = 'Good progress';
     else if (pct >= curr.required_pct * 0.5) remarks = 'Behind';
     else remarks = 'Need Improvement';
-
     setCurriculum(prev => prev.map((c, i) => i === index ? {
       ...c,
       topics_covered: covered,
@@ -355,13 +438,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const calcExamResult = (subject: string, form: string) => {
     const idx = examResults.findIndex(e => e.subject === subject && e.form === form);
     if (idx === -1) return;
-
     const exam = examResults[idx];
     const total = exam.grade_a + exam.grade_b + exam.grade_c + exam.grade_d + exam.grade_e + exam.grade_s + exam.grade_f;
     const abc = exam.grade_a + exam.grade_b + exam.grade_c;
     const kpi = total > 0 ? (abc / total) * 100 : 0;
     const below = exam.grade_d + exam.grade_e + exam.grade_s + exam.grade_f;
-
     setExamResults(prev => prev.map((e, i) => i === idx ? {
       ...e,
       total,
@@ -373,10 +454,8 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
   const calcHw = (index: number) => {
     const hw = hwTeachers[index];
     if (!hw) return;
-
     const expected = hw.exam_in_month === 'YES' ? Math.round(hw.base_hw * 0.75) : hw.base_hw;
     const pct = expected > 0 ? (hw.marked_hw / expected) * 100 : 0;
-
     setHwTeachers(prev => prev.map((h, i) => i === index ? {
       ...h,
       expected_hw: expected,
@@ -384,7 +463,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     } : h));
   };
 
-  // Summary calculations
   const hwSummary = FORMS.map(form => {
     const formHw = hwTeachers.filter(h => h.form === form);
     return {
@@ -415,7 +493,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     parents: hwTeachers.reduce((sum, h) => sum + h.calling_parents, 0)
   };
 
-  // Staff checklist totals
   const staffTotals = {
     lp: staffChecklist.filter(s => s.lp_updated === 'YES').length,
     logbook: staffChecklist.filter(s => s.logbook_updated === 'YES').length,
@@ -425,13 +502,10 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     missed: staffChecklist.filter(s => s.missed_lessons === 'YES').length
   };
 
-  // Save draft
   const saveDraft = async () => {
     if (!departmentId || !profile) return;
-
     setSaving(true);
     try {
-      // Create or update report
       const reportData = {
         department_id: departmentId,
         month: selectedMonth,
@@ -448,11 +522,8 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         challenges,
         created_by: profile.id
       };
-
       let reportIdToUse = currentReportId;
-
       if (!currentReportId) {
-        // Check if draft exists for this month
         const { data: existing } = await supabase
           .from('hod_reports')
           .select('id')
@@ -460,13 +531,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           .eq('month', selectedMonth)
           .eq('year', selectedYear)
           .maybeSingle();
-
         if (existing) {
           reportIdToUse = existing.id;
           setCurrentReportId(existing.id);
         }
       }
-
       if (reportIdToUse) {
         const { error: updateError } = await supabase.from('hod_reports').update(reportData).eq('id', reportIdToUse);
         if (updateError) throw new Error(updateError.message);
@@ -482,10 +551,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           setCurrentReportId(newReport.id);
         }
       }
-
       if (!reportIdToUse) throw new Error('Failed to create report');
-
-      // Delete existing child rows then re-insert (clean replace strategy)
       await Promise.all([
         supabase.from('hod_issues').delete().eq('report_id', reportIdToUse),
         supabase.from('hod_curriculum').delete().eq('report_id', reportIdToUse),
@@ -497,10 +563,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         supabase.from('hod_issues_for_deputy').delete().eq('report_id', reportIdToUse),
         supabase.from('hod_bonus_recommendations').delete().eq('report_id', reportIdToUse),
       ]);
-
-      // Insert all child data
-      const monthIndex = MONTHS.indexOf(selectedMonth) + 1;
-
       const issuesToInsert = issues.map(iss => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -510,7 +572,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         frequency: iss.frequency || 0,
         remarks: iss.remarks || null
       }));
-
       const curriculumToInsert = curriculum.map(c => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -525,7 +586,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         required_pct: c.required_pct || 0,
         remarks: c.remarks || null
       }));
-
       const examsToInsert = examResults.map(e => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -542,7 +602,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         kpi_pct: e.kpi_pct || 0,
         below_kpi: e.below_kpi || 0
       }));
-
       const belowKpiToInsert = belowKpi.map(k => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -552,7 +611,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         support_given: k.support_given || null,
         frequency: k.frequency || 0
       }));
-
       const hwToInsert = hwTeachers.map(h => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -570,7 +628,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         real_practicals: h.real_practicals || 0,
         calling_parents: h.calling_parents || 0
       }));
-
       const staffToInsert = staffChecklist.map(s => ({
         report_id: reportIdToUse,
         department_id: departmentId,
@@ -584,7 +641,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         missed_lessons: s.missed_lessons || 'NO',
         reason_for_missing: s.reason_for_missing || null
       }));
-
       const supportToInsert = supportRequests
         .filter(sr => sr.staff || sr.issue || sr.suggestion)
         .map(sr => ({
@@ -594,7 +650,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           issue: sr.issue || null,
           suggestion: sr.suggestion || null
         }));
-
       const deputyToInsert = issuesForDeputy
         .filter(iss => iss.title || iss.description)
         .map(iss => ({
@@ -603,7 +658,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           title: iss.title || null,
           description: iss.description || null
         }));
-
       const bonusToInsert = bonusRecommendations
         .filter(rec => rec.staff || rec.reasons)
         .map(rec => ({
@@ -612,7 +666,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           staff_name: rec.staff || null,
           reasons: rec.reasons || null
         }));
-
       const insertPromises: Promise<any>[] = [];
       if (issuesToInsert.length) insertPromises.push(supabase.from('hod_issues').insert(issuesToInsert));
       if (curriculumToInsert.length) insertPromises.push(supabase.from('hod_curriculum').insert(curriculumToInsert));
@@ -623,14 +676,16 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
       if (supportToInsert.length) insertPromises.push(supabase.from('hod_support_requests').insert(supportToInsert));
       if (deputyToInsert.length) insertPromises.push(supabase.from('hod_issues_for_deputy').insert(deputyToInsert));
       if (bonusToInsert.length) insertPromises.push(supabase.from('hod_bonus_recommendations').insert(bonusToInsert));
-
       const insertResults = await Promise.all(insertPromises);
       const insertErrors = insertResults.filter(r => r.error);
       if (insertErrors.length > 0) {
         console.error('Errors saving child data:', insertErrors);
         throw new Error('Failed to save some report sections: ' + insertErrors.map((e: any) => e.error.message).join('; '));
       }
-
+      const draftKey = getDraftKey();
+      if (draftKey) {
+        try { localStorage.removeItem(draftKey); } catch (e) { console.error('Failed to clear local draft:', e); }
+      }
       alert('Draft saved successfully!');
       if (onSaved && reportIdToUse) onSaved(reportIdToUse);
     } catch (error: any) {
@@ -639,17 +694,14 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     setSaving(false);
   };
 
-  // Submit report
   const submitReport = async () => {
     if (!currentReportId) {
       alert('Please save as draft first.');
       return;
     }
-
     if (!window.confirm('Are you sure you want to submit this report? You cannot edit it after submission.')) {
       return;
     }
-
     setSaving(true);
     try {
       const { error: submitError } = await supabase
@@ -659,10 +711,12 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           submitted_at: new Date().toISOString()
         })
         .eq('id', currentReportId);
-
       if (submitError) throw new Error(submitError.message);
-
       setReportStatus('submitted');
+      const draftKey = getDraftKey();
+      if (draftKey) {
+        try { localStorage.removeItem(draftKey); } catch (e) { console.error('Failed to clear local draft:', e); }
+      }
       alert('Report submitted successfully!');
       if (onSubmit) onSubmit();
     } catch (error: any) {
@@ -671,7 +725,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     setSaving(false);
   };
 
-  // Toggle section
   const toggleSection = (num: number) => {
     setOpenSections(prev =>
       prev.includes(num)
@@ -688,7 +741,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
     );
   }
 
-  // Show message if user doesn't have a department assigned
   if (!departmentId) {
     return (
       <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-8 text-center">
@@ -706,7 +758,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="bg-gradient-to-r from-[#1F3864] to-[#2d5098] text-white rounded-lg p-6">
         <div className="flex justify-between items-start">
           <div>
@@ -722,7 +773,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </div>
 
-      {/* Status indicator */}
       <div className={`flex items-center gap-2 px-4 py-3 rounded-lg ${
         reportStatus === 'submitted' ? 'bg-green-50 border border-green-200' :
         reportStatus === 'edit_requested' ? 'bg-yellow-50 border border-yellow-200' :
@@ -741,12 +791,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         ) : (
           <>
             <AlertCircle className="w-5 h-5 text-blue-500" />
-            <span className="text-blue-700 text-sm font-medium">Draft Mode</span>
+            <span className="text-blue-700 text-sm font-medium">Draft Mode — Auto-saves locally every 3 seconds</span>
           </>
         )}
       </div>
 
-      {/* Section 1: Report Header */}
       <Section
         number={1}
         title="Report Header"
@@ -818,15 +867,14 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
               readOnly
               className={`font-medium ${
                 reportStatus === 'submitted' ? 'bg-green-50 border-green-200 text-green-700' :
-                reportStatus === 'edit_requested' ? 'bg-yellow-50 border-yellow-200 text-yellow-700' :
-                'bg-blue-50 border-blue-200 text-blue-700'
+                reportStatus === 'edit_requested' ? 'bg-yellow-50 border border-yellow-200 text-yellow-700' :
+                'bg-blue-50 border border-blue-200 text-blue-700'
               }`}
             />
           </InputGroup>
         </div>
       </Section>
 
-      {/* Section 2: Department Issues */}
       <Section
         number={2}
         title="Department Issues"
@@ -849,10 +897,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                   <td className="px-3 py-2">
                     <input
                       type="number"
+                      step="0.01"
                       min={0}
                       value={issue.frequency || ''}
                       onChange={(e) => setIssues(prev => prev.map((iss, idx) =>
-                        idx === i ? { ...iss, frequency: parseInt(e.target.value) || 0 } : iss
+                        idx === i ? { ...iss, frequency: parseFloat(e.target.value) || 0 } : iss
                       ))}
                       className="w-full px-2 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
@@ -877,7 +926,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 3: Curriculum Coverage */}
       <Section
         number={3}
         title="Progress of Curriculum in All Classes"
@@ -912,10 +960,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                   <td className="px-2 py-2">
                     <input
                       type="number"
+                      step="0.01"
                       min={0}
                       max={curr.topics_total}
                       value={curr.topics_covered || ''}
-                      onChange={(e) => calcCurriculum(i, parseInt(e.target.value) || 0)}
+                      onChange={(e) => calcCurriculum(i, parseFloat(e.target.value) || 0)}
                       className="w-full px-2 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
                     />
@@ -951,7 +1000,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 4: Exam Results */}
       <Section
         number={4}
         title="Department Performance — Exam Results"
@@ -991,10 +1039,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                               <td key={form} className="px-2 py-2">
                                 <input
                                   type="number"
+                                  step="0.01"
                                   min={0}
                                   value={idx >= 0 ? (examResults[idx][gradeKey] as number) || '' : ''}
                                   onChange={(e) => {
-                                    const val = parseInt(e.target.value) || 0;
+                                    const val = parseFloat(e.target.value) || 0;
                                     setExamResults(prev => prev.map((ex, i) =>
                                       i === idx ? { ...ex, [gradeKey]: val } : ex
                                     ));
@@ -1065,7 +1114,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 5: General Comments */}
       <Section
         number={5}
         title="General Comment & Way Forward"
@@ -1115,7 +1163,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 6: Below KPI */}
       <Section
         number={6}
         title="Students Below KPI — Action Taken"
@@ -1141,10 +1188,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                   <td className="px-3 py-2">
                     <input
                       type="number"
+                      step="0.01"
                       min={0}
                       value={kpi.students_below_kpi || ''}
                       onChange={(e) => setBelowKpi(prev => prev.map((k, idx) =>
-                        idx === i ? { ...k, students_below_kpi: parseInt(e.target.value) || 0 } : k
+                        idx === i ? { ...k, students_below_kpi: parseFloat(e.target.value) || 0 } : k
                       ))}
                       className="w-full px-2 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
@@ -1165,10 +1213,11 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                   <td className="px-3 py-2">
                     <input
                       type="number"
+                      step="0.01"
                       min={0}
                       value={kpi.frequency || ''}
                       onChange={(e) => setBelowKpi(prev => prev.map((k, idx) =>
-                        idx === i ? { ...k, frequency: parseInt(e.target.value) || 0 } : k
+                        idx === i ? { ...k, frequency: parseFloat(e.target.value) || 0 } : k
                       ))}
                       className="w-full px-2 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
@@ -1181,233 +1230,6 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 7: HW Tests */}
-      <Section
-        number={7}
-        title="Student Homework & Tests Per Month — Per Teacher"
-        isOpen={openSections.includes(7)}
-        onToggle={() => toggleSection(7)}
-      >
-        <p className="text-xs text-gray-500 mb-3">
-          Yellow = enter data | Green = auto-calculated | Gray = system locked | Expected HW = Base × 0.75 if Exam = YES
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-[#1F3864] text-white">
-                <th className="px-2 py-2 text-left">Teacher</th>
-                <th className="px-2 py-2 text-left">Subject</th>
-                <th className="px-2 py-2 text-left">Class</th>
-                <th className="px-2 py-2 text-center">Form</th>
-                <th className="px-2 py-2 text-center">Exam?</th>
-                <th className="px-2 py-2 text-center">Base</th>
-                <th className="px-2 py-2 text-center">Expected</th>
-                <th className="px-2 py-2 text-center">Marked</th>
-                <th className="px-2 py-2 text-center">HW %</th>
-                <th className="px-2 py-2 text-center">Tests</th>
-                {isScience && <th className="px-2 py-2 text-center">Demo</th>}
-                {isScience && <th className="px-2 py-2 text-center">Real</th>}
-                <th className="px-2 py-2 text-center">Parents</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hwTeachers.map((hw, i) => (
-                <tr key={i} className="border-b border-gray-100 even:bg-gray-50">
-                  <td className="px-2 py-1.5 bg-gray-100">{hw.teacher_name}</td>
-                  <td className="px-2 py-1.5 bg-gray-100">{hw.subject}</td>
-                  <td className="px-2 py-1.5 bg-gray-100">{hw.class_name}</td>
-                  <td className="px-2 py-1.5 bg-gray-100 text-center">{hw.form}</td>
-                  <td className="px-2 py-1.5">
-                    <select
-                      value={hw.exam_in_month}
-                      onChange={(e) => {
-                        setHwTeachers(prev => prev.map((h, idx) =>
-                          idx === i ? { ...h, exam_in_month: e.target.value } : h
-                        ));
-                        calcHw(i);
-                      }}
-                      className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    >
-                      <option value="">—</option>
-                      <option value="NO">NO</option>
-                      <option value="YES">YES</option>
-                    </select>
-                  </td>
-                  <td className="px-2 py-1.5 bg-gray-100 text-center">{hw.base_hw}</td>
-                  <td className="px-2 py-1.5">
-                    <input type="text" value={hw.expected_hw} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input
-                      type="number"
-                      min={0}
-                      value={hw.marked_hw || ''}
-                      onChange={(e) => {
-                        setHwTeachers(prev => prev.map((h, idx) =>
-                          idx === i ? { ...h, marked_hw: parseInt(e.target.value) || 0 } : h
-                        ));
-                        calcHw(i);
-                      }}
-                      className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input type="text" value={hw.hw_pct ? `${hw.hw_pct}%` : '—'} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <input
-                      type="number"
-                      min={0}
-                      value={hw.tests_admin || ''}
-                      onChange={(e) => setHwTeachers(prev => prev.map((h, idx) =>
-                        idx === i ? { ...h, tests_admin: parseInt(e.target.value) || 0 } : h
-                      ))}
-                      className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  {isScience && (
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="number"
-                        min={0}
-                        value={hw.demo_practicals || ''}
-                        onChange={(e) => setHwTeachers(prev => prev.map((h, idx) =>
-                          idx === i ? { ...h, demo_practicals: parseInt(e.target.value) || 0 } : h
-                        ))}
-                        className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                        disabled={reportStatus === 'submitted'}
-                      />
-                    </td>
-                  )}
-                  {isScience && (
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="number"
-                        min={0}
-                        value={hw.real_practicals || ''}
-                        onChange={(e) => setHwTeachers(prev => prev.map((h, idx) =>
-                          idx === i ? { ...h, real_practicals: parseInt(e.target.value) || 0 } : h
-                        ))}
-                        className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                        disabled={reportStatus === 'submitted'}
-                      />
-                    </td>
-                  )}
-                  <td className="px-2 py-1.5">
-                    <input
-                      type="number"
-                      min={0}
-                      value={hw.calling_parents || ''}
-                      onChange={(e) => setHwTeachers(prev => prev.map((h, idx) =>
-                        idx === i ? { ...h, calling_parents: parseInt(e.target.value) || 0 } : h
-                      ))}
-                      className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-[#DCE6F1] font-bold text-[#1F3864]">
-                <td colSpan={6} className="px-2 py-2 text-right">DEPARTMENT TOTAL</td>
-                <td className="px-2 py-2">
-                  <input type="text" value={grandTotal.expected} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={grandTotal.marked} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={grandTotal.pct ? `${grandTotal.pct}%` : '—'} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={grandTotal.tests} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                {isScience && (
-                  <td className="px-2 py-2">
-                    <input type="text" value={grandTotal.demo} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                  </td>
-                )}
-                {isScience && (
-                  <td className="px-2 py-2">
-                    <input type="text" value={grandTotal.real} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                  </td>
-                )}
-                <td className="px-2 py-2">
-                  <input type="text" value={grandTotal.parents} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      </Section>
-
-      {/* Section 8: Summary by Form */}
-      <Section
-        number={8}
-        title="Homework Summary by Form (Auto-Calculated)"
-        isOpen={openSections.includes(8)}
-        onToggle={() => toggleSection(8)}
-      >
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-[#1F3864] text-white">
-                <th className="px-3 py-2 text-left">Form</th>
-                <th className="px-3 py-2 text-center">Expected</th>
-                <th className="px-3 py-2 text-center">Marked</th>
-                <th className="px-3 py-2 text-center">HW %</th>
-                <th className="px-3 py-2 text-center">Tests</th>
-                {isScience && <th className="px-3 py-2 text-center">Demo</th>}
-                {isScience && <th className="px-3 py-2 text-center">Real</th>}
-                <th className="px-3 py-2 text-center">Parents</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hwSummary.map(s => (
-                <tr key={s.form} className="border-b border-gray-100 even:bg-gray-50">
-                  <td className="px-3 py-2 font-medium">{s.form}</td>
-                  <td className="px-3 py-2">
-                    <input type="text" value={s.expected} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input type="text" value={s.marked} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input type="text" value={s.pct ? `${s.pct}%` : '—'} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input type="text" value={s.tests} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                  {isScience && (
-                    <td className="px-3 py-2">
-                      <input type="text" value={s.demo} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                    </td>
-                  )}
-                  {isScience && (
-                    <td className="px-3 py-2">
-                      <input type="text" value={s.real} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                    </td>
-                  )}
-                  <td className="px-3 py-2">
-                    <input type="text" value={s.parents} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center text-green-700 font-medium" />
-                  </td>
-                </tr>
-              ))}
-              <tr className="bg-[#DCE6F1] font-bold">
-                <td className="px-3 py-2">Grand Total</td>
-                <td className="px-3 py-2">
-                  <input type="text" value={grandTotal.expected} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-3 py-2">
-                  <input type="text" value={grandTotal.marked} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-3 py-2">
-                  <input type="text" value={grandTotal.pct ? `${grandTotal.pct}%` : '—'} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
                 <td className="px-3 py-2">
                   <input type="text" value={grandTotal.tests} readOnly className="w-full px-2 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
                 </td>
@@ -1430,10 +1252,9 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 9: Support Needed */}
       <Section
         number={9}
-        title="Support Needed from Ast. Deputy Headmaster"
+        title="Staff Checklist"
         isOpen={openSections.includes(9)}
         onToggle={() => toggleSection(9)}
       >
@@ -1441,76 +1262,14 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[#1F3864] text-white">
-                <th className="px-3 py-2 text-left w-28">Staff Name</th>
-                <th className="px-3 py-2 text-left">Issue</th>
-                <th className="px-3 py-2 text-left">Suggestion(s)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {supportRequests.map((sr, i) => (
-                <tr key={i} className="border-b border-gray-100">
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={sr.staff}
-                      onChange={(e) => setSupportRequests(prev => prev.map((s, idx) =>
-                        idx === i ? { ...s, staff: e.target.value } : s
-                      ))}
-                      placeholder="Staff name..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={sr.issue}
-                      onChange={(e) => setSupportRequests(prev => prev.map((s, idx) =>
-                        idx === i ? { ...s, issue: e.target.value } : s
-                      ))}
-                      placeholder="Issue..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={sr.suggestion}
-                      onChange={(e) => setSupportRequests(prev => prev.map((s, idx) =>
-                        idx === i ? { ...s, suggestion: e.target.value } : s
-                      ))}
-                      placeholder="Suggestion..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-
-      {/* Section 10: Staff Checklist */}
-      <Section
-        number={10}
-        title="Staff Information — Monthly Checklist"
-        isOpen={openSections.includes(10)}
-        onToggle={() => toggleSection(10)}
-      >
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-[#1F3864] text-white">
                 <th className="px-2 py-2 text-left">Staff Name</th>
                 <th className="px-2 py-2 text-center">LP Updated</th>
                 <th className="px-2 py-2 text-center">Logbook</th>
                 <th className="px-2 py-2 text-center">Scheme</th>
                 <th className="px-2 py-2 text-center">Date Checked</th>
-                <th className="px-2 py-2 text-center">1:1 Done</th>
-                <th className="px-2 py-2 text-center">T.Aid Used</th>
-                <th className="px-2 py-2 text-center">Missed Lessons</th>
+                <th className="px-2 py-2 text-center">1-on-1</th>
+                <th className="px-2 py-2 text-center">T. Aid</th>
+                <th className="px-2 py-2 text-center">Missed?</th>
                 <th className="px-2 py-2 text-left">Reason</th>
               </tr>
             </thead>
@@ -1565,7 +1324,7 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                       type="date"
                       value={staff.date_checked || ''}
                       onChange={(e) => setStaffChecklist(prev => prev.map((s, idx) =>
-                        idx === i ? { ...s, date_checked: e.target.value } : s
+                        idx === i ? { ...s, date_checked: e.target.value || null } : s
                       ))}
                       className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
@@ -1608,52 +1367,35 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
                       className="w-full px-1 py-1 border border-gray-300 rounded text-center bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
                     >
-                      <option value="">—</option>
-                      <option value="YES">YES</option>
                       <option value="NO">NO</option>
+                      <option value="YES">YES</option>
                     </select>
                   </td>
                   <td className="px-2 py-1.5">
-                    <select
+                    <input
+                      type="text"
                       value={staff.reason_for_missing || ''}
                       onChange={(e) => setStaffChecklist(prev => prev.map((s, idx) =>
                         idx === i ? { ...s, reason_for_missing: e.target.value } : s
                       ))}
+                      placeholder="Reason..."
                       className="w-full px-1 py-1 border border-gray-300 rounded bg-yellow-50"
                       disabled={reportStatus === 'submitted'}
-                    >
-                      <option value="">—</option>
-                      <option value="Sick Leave">Sick Leave</option>
-                      <option value="Compassionate">Compassionate</option>
-                      <option value="Absenteeism">Absenteeism</option>
-                      <option value="N/A">N/A</option>
-                    </select>
+                    />
                   </td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr className="bg-[#DCE6F1] font-bold text-[#1F3864]">
-                <td className="px-2 py-2">TOTALS (YES count)</td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.lp} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.logbook} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.scheme} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
+                <td className="px-2 py-2">TOTALS</td>
+                <td className="px-2 py-2 text-center">{staffTotals.lp}</td>
+                <td className="px-2 py-2 text-center">{staffTotals.logbook}</td>
+                <td className="px-2 py-2 text-center">{staffTotals.scheme}</td>
                 <td className="px-2 py-2"></td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.one_one} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.t_aid} readOnly className="w-full px-1 py-1 bg-green-50 border border-green-200 rounded text-center font-medium" />
-                </td>
-                <td className="px-2 py-2">
-                  <input type="text" value={staffTotals.missed} readOnly className="w-full px-1 py-1 bg-red-50 border border-red-200 rounded text-center font-medium text-red-700" />
-                </td>
+                <td className="px-2 py-2 text-center">{staffTotals.one_one}</td>
+                <td className="px-2 py-2 text-center">{staffTotals.t_aid}</td>
+                <td className="px-2 py-2 text-center text-red-600">{staffTotals.missed}</td>
                 <td className="px-2 py-2"></td>
               </tr>
             </tfoot>
@@ -1661,191 +1403,217 @@ export function HodReportForm({ reportId, onSaved, onSubmit }: HodReportFormProp
         </div>
       </Section>
 
-      {/* Section 11: Issues for Deputy */}
+      <Section
+        number={10}
+        title="Department Achievements"
+        isOpen={openSections.includes(10)}
+        onToggle={() => toggleSection(10)}
+      >
+        <div className="space-y-3">
+          {achievements.map((ach, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-[#1F3864] font-bold mt-2">{i + 1}.</span>
+              <textarea
+                value={ach}
+                onChange={(e) => setAchievements(prev => prev.map((a, idx) =>
+                  idx === i ? e.target.value : a
+                ))}
+                rows={2}
+                placeholder={`Achievement ${i + 1}...`}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1F3864] focus:border-transparent outline-none resize-none"
+                disabled={reportStatus === 'submitted'}
+              />
+            </div>
+          ))}
+        </div>
+      </Section>
+
       <Section
         number={11}
-        title="Issues for Deputy Headmaster"
+        title="Department Challenges"
         isOpen={openSections.includes(11)}
         onToggle={() => toggleSection(11)}
       >
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-[#1F3864] text-white">
-                <th className="px-3 py-2 text-left w-32">Issue Title</th>
-                <th className="px-3 py-2 text-left">Full Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {issuesForDeputy.map((iss, i) => (
-                <tr key={i} className="border-b border-gray-100">
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={iss.title}
-                      onChange={(e) => setIssuesForDeputy(prev => prev.map((iss, idx) =>
-                        idx === i ? { ...iss, title: e.target.value } : iss
-                      ))}
-                      placeholder="Issue title..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={iss.description}
-                      onChange={(e) => setIssuesForDeputy(prev => prev.map((iss, idx) =>
-                        idx === i ? { ...iss, description: e.target.value } : iss
-                      ))}
-                      placeholder="Full description..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          {challenges.map((chal, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-[#1F3864] font-bold mt-2">{i + 1}.</span>
+              <textarea
+                value={chal}
+                onChange={(e) => setChallenges(prev => prev.map((c, idx) =>
+                  idx === i ? e.target.value : c
+                ))}
+                rows={2}
+                placeholder={`Challenge ${i + 1}...`}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1F3864] focus:border-transparent outline-none resize-none"
+                disabled={reportStatus === 'submitted'}
+              />
+            </div>
+          ))}
         </div>
       </Section>
 
-      {/* Section 12: Bonus Recommendations */}
       <Section
         number={12}
-        title="Staff Recommended for Monthly Bonus"
+        title="Support Requests from Staff"
         isOpen={openSections.includes(12)}
         onToggle={() => toggleSection(12)}
       >
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-[#1F3864] text-white">
-                <th className="px-3 py-2 text-left w-32">Staff Name</th>
-                <th className="px-3 py-2 text-left">Reasons for Recommendation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bonusRecommendations.map((rec, i) => (
-                <tr key={i} className="border-b border-gray-100">
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={rec.staff}
-                      onChange={(e) => setBonusRecommendations(prev => prev.map((r, idx) =>
-                        idx === i ? { ...r, staff: e.target.value } : r
-                      ))}
-                      placeholder="Staff name..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={rec.reasons}
-                      onChange={(e) => setBonusRecommendations(prev => prev.map((r, idx) =>
-                        idx === i ? { ...r, reasons: e.target.value } : r
-                      ))}
-                      placeholder="Reasons..."
-                      className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
-                      disabled={reportStatus === 'submitted'}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-4">
+          {supportRequests.map((req, i) => (
+            <div key={i} className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3 bg-gray-50 rounded-lg">
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Staff Name</label>
+                <input
+                  type="text"
+                  value={req.staff}
+                  onChange={(e) => setSupportRequests(prev => prev.map((r, idx) =>
+                    idx === i ? { ...r, staff: e.target.value } : r
+                  ))}
+                  placeholder="Staff name..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
+                  disabled={reportStatus === 'submitted'}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Issue</label>
+                <input
+                  type="text"
+                  value={req.issue}
+                  onChange={(e) => setSupportRequests(prev => prev.map((r, idx) =>
+                    idx === i ? { ...r, issue: e.target.value } : r
+                  ))}
+                  placeholder="Issue..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
+                  disabled={reportStatus === 'submitted'}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Suggestion</label>
+                <input
+                  type="text"
+                  value={req.suggestion}
+                  onChange={(e) => setSupportRequests(prev => prev.map((r, idx) =>
+                    idx === i ? { ...r, suggestion: e.target.value } : r
+                  ))}
+                  placeholder="Suggestion..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
+                  disabled={reportStatus === 'submitted'}
+                />
+              </div>
+            </div>
+          ))}
         </div>
       </Section>
 
-      {/* Section 13: Achievements & Challenges */}
       <Section
         number={13}
-        title="Monthly Achievements & Challenges"
+        title="Issues for Deputy Headmaster"
         isOpen={openSections.includes(13)}
         onToggle={() => toggleSection(13)}
       >
-        <div className="space-y-6">
-          <div>
-            <label className="block text-sm font-bold text-green-700 mb-3">ACHIEVEMENTS</label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {achievements.map((a, i) => (
+        <div className="space-y-4">
+          {issuesForDeputy.map((issue, i) => (
+            <div key={i} className="space-y-2 p-3 bg-gray-50 rounded-lg">
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Issue Title</label>
                 <input
-                  key={i}
                   type="text"
-                  value={a}
-                  onChange={(e) => setAchievements(prev => prev.map((ach, idx) =>
-                    idx === i ? e.target.value : ach
+                  value={issue.title}
+                  onChange={(e) => setIssuesForDeputy(prev => prev.map((iss, idx) =>
+                    idx === i ? { ...iss, title: e.target.value } : iss
                   ))}
-                  placeholder={`Achievement ${i + 1}...`}
-                  className="px-3 py-2 border border-gray-300 rounded-lg bg-yellow-50"
+                  placeholder="Issue title..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
                   disabled={reportStatus === 'submitted'}
                 />
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-bold text-red-700 mb-3">CHALLENGES</label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {challenges.map((c, i) => (
-                <input
-                  key={i}
-                  type="text"
-                  value={c}
-                  onChange={(e) => setChallenges(prev => prev.map((ch, idx) =>
-                    idx === i ? e.target.value : ch
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Description</label>
+                <textarea
+                  value={issue.description}
+                  onChange={(e) => setIssuesForDeputy(prev => prev.map((iss, idx) =>
+                    idx === i ? { ...iss, description: e.target.value } : iss
                   ))}
-                  placeholder={`Challenge ${i + 1}...`}
-                  className="px-3 py-2 border border-gray-300 rounded-lg bg-yellow-50"
+                  rows={2}
+                  placeholder="Description..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50 resize-none"
                   disabled={reportStatus === 'submitted'}
                 />
-              ))}
+              </div>
             </div>
-          </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section
+        number={14}
+        title="Bonus Recommendations"
+        isOpen={openSections.includes(14)}
+        onToggle={() => toggleSection(14)}
+      >
+        <div className="space-y-4">
+          {bonusRecommendations.map((rec, i) => (
+            <div key={i} className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-gray-50 rounded-lg">
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Staff Name</label>
+                <input
+                  type="text"
+                  value={rec.staff}
+                  onChange={(e) => setBonusRecommendations(prev => prev.map((r, idx) =>
+                    idx === i ? { ...r, staff: e.target.value } : r
+                  ))}
+                  placeholder="Staff name..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
+                  disabled={reportStatus === 'submitted'}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-[#1F3864] mb-1">Reasons</label>
+                <input
+                  type="text"
+                  value={rec.reasons}
+                  onChange={(e) => setBonusRecommendations(prev => prev.map((r, idx) =>
+                    idx === i ? { ...r, reasons: e.target.value } : r
+                  ))}
+                  placeholder="Reasons..."
+                  className="w-full px-2 py-1 border border-gray-300 rounded bg-yellow-50"
+                  disabled={reportStatus === 'submitted'}
+                />
+              </div>
+            </div>
+          ))}
         </div>
       </Section>
 
       {/* Action Buttons */}
-      <div className="sticky bottom-0 bg-white border-t shadow-lg py-4 px-6 -mx-6 -mb-6 mt-6">
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-gray-500">
-            Submitting as: <span className="font-medium text-[#1F3864]">{department?.name}</span> •
-            <span className="ml-2">{selectedMonth} {selectedYear}</span>
-          </div>
-          <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3 pt-4 pb-8">
+        {reportStatus !== 'submitted' && (
+          <>
             <button
               onClick={saveDraft}
-              disabled={saving || reportStatus === 'submitted'}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-[#1F3864] text-[#1F3864] rounded-lg hover:bg-[#DCE6F1] transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={saving}
+              className="flex items-center gap-2 px-6 py-3 bg-[#1F3864] text-white rounded-lg hover:bg-[#2d5098] transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
               <Save className="w-4 h-4" />
               {saving ? 'Saving...' : 'Save Draft'}
             </button>
             <button
-              onClick={() => {}}
-              disabled={reportStatus === 'submitted'}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Eye className="w-4 h-4" />
-              Preview
-            </button>
-            <button
               onClick={submitReport}
-              disabled={saving || reportStatus === 'submitted'}
-              className="flex items-center gap-2 px-4 py-2 bg-[#C9A84C] text-[#1F3864] rounded-lg hover:bg-[#f0d080] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={saving}
+              className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
               <Send className="w-4 h-4" />
-              Submit Report
+              {saving ? 'Submitting...' : 'Submit Report'}
             </button>
-          </div>
-        </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// Section Component
+// Section Collapsible Component
 function Section({
   number,
   title,
@@ -1860,16 +1628,22 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 bg-[#1F3864] text-white hover:bg-[#162a4e] transition"
+        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
       >
-        <span className="w-6 h-6 bg-[#C9A84C] text-[#1F3864] rounded-full flex items-center justify-center text-sm font-bold">
-          {number}
-        </span>
-        <span className="flex-1 text-left font-medium">{title}</span>
-        {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+        <div className="flex items-center gap-3">
+          <span className="w-7 h-7 flex items-center justify-center bg-[#1F3864] text-white text-sm font-bold rounded-full">
+            {number}
+          </span>
+          <span className="font-semibold text-[#1F3864]">{title}</span>
+        </div>
+        {isOpen ? (
+          <ChevronUp className="w-5 h-5 text-gray-500" />
+        ) : (
+          <ChevronDown className="w-5 h-5 text-gray-500" />
+        )}
       </button>
       {isOpen && (
         <div className="p-4">
@@ -1880,17 +1654,11 @@ function Section({
   );
 }
 
-// Input Group Component
-function InputGroup({
-  label,
-  children
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+// Input Group Helper
+function InputGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label className="block text-xs font-bold uppercase tracking-wider text-[#1F3864] mb-1">
+    <div className="space-y-1">
+      <label className="block text-xs font-bold uppercase tracking-wider text-[#1F3864]">
         {label}
       </label>
       {children}
